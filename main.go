@@ -6,14 +6,17 @@ import (
     "encoding/json"
     "fmt"
     "io"
+    "log"
     "regexp"
     "net/http"
     "os"
     "strings"
 
+    "github.com/charmbracelet/ssh"
+    "github.com/charmbracelet/wish"
+    "github.com/charmbracelet/wish/logging"
     "gopkg.in/yaml.v2"
 )
-
 // Config stores the API key and other configuration details
 type Config struct {
     APIKey       string `yaml:"api_key"`
@@ -102,7 +105,7 @@ func colorizeText(text string) string {
 
 
 // StreamResponse sends a prompt to the Anthropic API and prints the response text as it arrives
-func StreamResponse(apiKey string, model string, systemPrompt string, messageHistory *[]Message) error {
+func StreamResponse(apiKey string, model string, systemPrompt string, messageHistory *[]Message, s ssh.Session) error {
     url := "https://api.anthropic.com/v1/messages"
 
     requestPayload := RequestPayload{
@@ -131,7 +134,6 @@ func StreamResponse(apiKey string, model string, systemPrompt string, messageHis
         return err
     }
     defer resp.Body.Close()
-
 
     reader := bufio.NewReader(resp.Body)
     var content strings.Builder
@@ -164,13 +166,11 @@ func StreamResponse(apiKey string, model string, systemPrompt string, messageHis
                         }
                     }
                 case "message_stop":
-                (*messageHistory) = append((*messageHistory), Message{Role: "assistant", Content: content.String()})
-                	colorizedText := colorizeText(content.String())
-					fmt.Print(colorizedText)
-                   // fmt.Print(content.String())
-                   // fmt.Println()
-                   fmt.Print(" ")
-                   content.Reset()
+                    (*messageHistory) = append((*messageHistory), Message{Role: "assistant", Content: content.String()})
+                    colorizedText := colorizeText(content.String())
+                    fmt.Fprint(s, colorizedText)
+                    fmt.Fprint(s, " ")
+                    content.Reset()
                 }
             }
         }
@@ -179,67 +179,88 @@ func StreamResponse(apiKey string, model string, systemPrompt string, messageHis
     return nil
 }
 
-func main() {
-    scanner := bufio.NewScanner(os.Stdin)
-
-
+func sessionHandler(s ssh.Session) {
+    // Load the configuration
     configPath := "config.yaml"
     config, err := LoadConfig(configPath)
+    if err != nil {
+        fmt.Fprintln(s, "Failed to load configuration:", err)
+        return
+    }
 
+    // Set default values if not specified in the config
     if config.Model == "" {
-          config.Model = "claude-3-opus-20240229" // Default model if not specified in the config
+        config.Model = "claude-3-opus-20240229"
     }
-
     if config.ShellPrompt == "" {
-          config.ShellPrompt = "$> " // Default model if not specified in the config
+        config.ShellPrompt = "$> "
     }
-
     if config.SystemPrompt == "" {
-            config.SystemPrompt = "Assistant is in a CLI mood today." // Default system prompt if not specified in the config
+        config.SystemPrompt = "Assistant is in a CLI mood today."
     }
 
-    if err != nil || config.APIKey == "" {
-        fmt.Print("Enter your API Key: ")
-        scanner.Scan()
-        apiKey := scanner.Text()
-
-        config = &Config{APIKey: apiKey, Model: config.Model, ShellPrompt: config.ShellPrompt, SystemPrompt: config.SystemPrompt}
-        if err := SaveConfig(configPath, config); err != nil {
-            fmt.Println("Failed to save API Key:", err)
-            return
-        }
-    }
-
+    // Initialize the message history
     var messageHistory []Message
-    // messageHistory = append(messageHistory, Message{Role: "system", Content: config.SystemPrompt})
-    fmt.Println("Welcome to the a̷̡̧̭̹͉̤̘͍̒͌̆͛͘ͅn̵̛̻͂̓̀̓̇́̍͊̈́̂͒̀͠͝t̸̡̢̙͖̥͍̻͔͉̼̬̪̥̻́͊͂̂͊̍̈́̍̀̑̕͝͠ḩ̵̨̬́́̽͗̔̊́́͘͝r̶̡̛͈̳̭̯̯͕̱̐̒̆͗̋̇̈́͝͝o̷̧̬̤̮͉̬͍̖̍̍͊p̸̡͕̗͛̀̀i̵̧̡̛̞̳͉̞̤̼͋̔̍̿̈́̆͑̍̇͐͛́̒͆̕͠ͅç̴̢̢̥̮̜͉̹̜̣̱̱͓̙̘̮̤̅ quantum reality interface!")
-    fmt.Println()
-    fmt.Println()
-    fmt.Println("To get started type a command: help, ls, etc.")
-    fmt.Println("Type 'exit' or 'quit' to end the session.")
-    fmt.Println()
-    fmt.Print(config.ShellPrompt)
 
+    // Print the welcome message and prompt
+    fmt.Fprintln(s, "Welcome to the a̷̡̧̭̹͉̤̘͍̒͌̆͛͘ͅn̵̛̻͂̓̀̓̇́̍͊̈́̂͒̀͠͝t̸̡̢̙͖̥͍̻͔͉̼̬̪̥̻́͊͂̂͊̍̈́̍̀̑̕͝͠ḩ̵̨̬́́̽͗̔̊́́͘͝r̶̡̛͈̳̭̯̯͕̱̐̒̆͗̋̇̈́͝͝o̷̧̬̤̮͉̬͍̖̍̍͊p̸̡͕̗͛̀̀i̵̧̡̛̞̳͉̞̤̼͋̔̍̿̈́̆͑̍̇͐͛́̒͆̕͠ͅç̴̢̢̥̮̜͉̹̜̣̱̱͓̙̘̮̤̅ quantum reality interface!")
+    fmt.Fprintln(s)
+    fmt.Fprintln(s)
+    fmt.Fprintln(s, "To get started type a command: help, ls, etc.")
+    fmt.Fprintln(s, "Type 'exit' or 'quit' to end the session.")
+    fmt.Fprintln(s)
+    fmt.Fprint(s, config.ShellPrompt)
 
+    // Start the interactive session
+    scanner := bufio.NewScanner(s)
     for {
-        // fmt.Print(config.ShellPrompt)
+        // Read the user input
         scanner.Scan()
         prompt := scanner.Text()
 
+        // Handle the exit command
         if prompt == "exit" || prompt == "quit" {
-            fmt.Println("Terminating s̷e̷s̵s̶i̴o̷n̸. Shutting d̸̖̍o̴̢͗w̵̺̋n̵̼͝.̶͙͑.̵̳́.̴̙̀....")
+            fmt.Fprintln(s, "Terminating s̷e̷s̵s̶i̴o̷n̸. Shutting d̸̖̍o̴̢͗w̵̺̋n̵̼͝.̶͙͑.̵̳́.̴̙̀....")
             break
         }
 
-        prompt = "<cmd>"+ prompt +"</cmd>"
+        prompt = "<cmd>" + prompt + "</cmd>"
 
         // Add the user's message to the message history
         messageHistory = append(messageHistory, Message{Role: "user", Content: prompt})
 
-        err := StreamResponse(config.APIKey, config.Model, config.SystemPrompt, &messageHistory)
+        // Stream the response
+        err := StreamResponse(config.APIKey, config.Model, config.SystemPrompt, &messageHistory, s)
         if err != nil {
-            fmt.Println("Error:", err)
+            fmt.Fprintln(s, "Error:", err)
             continue
         }
+
+        // Print the shell prompt
+        fmt.Fprint(s, config.ShellPrompt)
+    }
+}
+
+func main() {
+    srv, err := wish.NewServer(
+        wish.WithAddress("localhost:22020"),
+        wish.WithHostKeyPath(".ssh/term_info_ed25519"),
+        wish.WithMiddleware(
+            func(next ssh.Handler) ssh.Handler {
+                return func(s ssh.Session) {
+                    sessionHandler(s)
+                    next(s)
+                }
+            },
+            logging.Middleware(),
+        ),
+    )
+    if err != nil {
+        log.Fatalln(err)
+    }
+
+    log.Println("Starting SSH server on localhost:22")
+    if err := srv.ListenAndServe(); err != nil {
+        log.Fatalln(err)
     }
 }
